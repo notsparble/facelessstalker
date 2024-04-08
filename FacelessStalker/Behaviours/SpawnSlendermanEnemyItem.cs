@@ -12,46 +12,53 @@ namespace SlendermanMod.Behaviours
     {
         EnemyType slendermanEnemy = Plugin.SlendermanEnemy;
 
-        public bool isSpawned = false;
+        private bool isSpawned = false;
+
+        //private bool pageHasBeenUsed = false; stays on false for all pages for the rest of the round (other days as well) for whatever reason so this stays deactivated for now -> same for isSpawned
 
         public override void EquipItem()
         {
             base.EquipItem();
 
-            if (isSpawned)
+            /*if (isSpawned)
             {
                 UnityEngine.Debug.Log("Slenderman already spawned in this round.");
-                return; // Verhindert erneutes Spawnen
-            }
-
+                return;
+            }*/
 
             if (playerHeldBy != null)
             {
-                if (!StartOfRound.Instance.inShipPhase)
+                if (!StartOfRound.Instance.inShipPhase && RoundManager.Instance.currentLevel.spawnEnemiesAndScrap) // no scrap ? gordion;
                 {
-                    if (SlendermanEnemyAI.numSlendermanEnemiesInLevel <= 0) // && !isSpawned
+                    if (SlendermanEnemyAI.numSlendermanEnemiesInLevel <= 0 && !isSpawned) //&& !pageHasBeenUsed)
                     {
                         // There is no slenderman present
                         // Thanks Hamunii!
                         SpawnSlenderman();
-                        isSpawned = true; // Setze den Spawn-Status auf true
+                        isSpawned = true;
                     }
                     else
                     {
-                        UnityEngine.Debug.Log("Slenderman not spawning as there's already one haunting the players!");
+                        UnityEngine.Debug.Log("Slenderman not spawning as there's already one haunting the players or the page has already been used!");
                     }
                 }
                 else
                 {
-                    UnityEngine.Debug.Log("Slenderman not spawning as the ship is currently in orbit!!");
+                    UnityEngine.Debug.Log("Slenderman not spawning as the ship is currently in orbit or on a safe moon!!");
                     return;
                 }
             }
             else
             {
-                UnityEngine.Debug.LogWarning("Player holding item = null!");
+                UnityEngine.Debug.LogWarning("Player holding item == null!");
                 return;
             }
+
+            /*if (!pageHasBeenUsed)
+            {
+                pageHasBeenUsed = true;
+                return;
+            }*/
         }
 
         [ServerRpc(RequireOwnership = false)]
