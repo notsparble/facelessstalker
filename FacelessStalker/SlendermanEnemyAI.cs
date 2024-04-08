@@ -3,6 +3,7 @@ using UnityEngine.AI;
 using GameNetcodeStuff;
 using Unity.Netcode;
 using System.Collections;
+using System.Runtime.CompilerServices;
 
 namespace SlendermanMod
 {
@@ -20,13 +21,9 @@ namespace SlendermanMod
 
         private bool couldNotStareLastAttempt;
 
-        private bool sitOutOneStare = false;
-
         private bool seenByPlayerThisTime;
 
         private bool disappearWithDelay;
-
-        //private bool makeLightsFlicker;
 
         private bool enemyMeshEnabled;
 
@@ -36,7 +33,27 @@ namespace SlendermanMod
 
         private bool switchedHauntingPlayer = false;
 
+        private bool toggleLights = false;
+
         private int timesSeenByPlayer;
+
+        private float hauntingIntervalTime;
+
+        private float stalkingIntervalTime;
+
+        private float chaseDuration;
+
+        private float hauntCooldown;
+
+        private bool canFlipLightsBreaker;
+
+        private float slendermanVoiceVolume;
+
+        private bool spawningSoundEnabled;
+
+        private bool approachingSoundEnabled;
+
+        private float approachingSoundChance;
 
         public static int numSlendermanEnemiesInLevel = 0;
 
@@ -62,6 +79,10 @@ namespace SlendermanMod
 
         public AudioClip jumpscareSFX;
 
+        public AudioClip approachingSFX;
+
+        public AudioClip spawnFirstTimeSFX;
+
         private enum States
         {
             Absent = 0,
@@ -83,22 +104,71 @@ namespace SlendermanMod
             agent.enabled = true;
 
             DisableMesh();
-            //DisableEnemyMeshClientRpc();
 
             outsideNodes = GameObject.FindGameObjectsWithTag("OutsideAINode");
             ChoosePlayerToHaunt();
             navHit = default(NavMeshHit);
+            // Get Config Values
+            hauntCooldown = Plugin.slendermanHauntCooldown;
+            if (hauntCooldown == null)
+            {
+                hauntCooldown = 35.0f;
+            }
+            hauntingIntervalTime = Plugin.slendermanHauntIntervalLength;
+            if (hauntingIntervalTime == null)
+            {
+                hauntingIntervalTime = 15.0f;
+            }
+            stalkingIntervalTime = Plugin.slendermanStalkingIntervalLength;
+            if (stalkingIntervalTime == null)
+            {
+                stalkingIntervalTime = 20.0f;
+            }
+            chaseDuration = Plugin.slendermanChaseDuration;
+            if (chaseDuration == null)
+            {
+                chaseDuration = 20.0f;
+            }
+            canFlipLightsBreaker = Plugin.slendermanFlipsLightBreaker;
+            if (canFlipLightsBreaker == null)
+            {
+                canFlipLightsBreaker = false;
+            }
+            spawningSoundEnabled = Plugin.slendermanPlaysSpawningSound;
+            if (spawningSoundEnabled == null)
+            {
+                spawningSoundEnabled = false;
+            }
+            approachingSoundEnabled = Plugin.slendermanPlaysApproachingSound;
+            if (approachingSoundEnabled == null)
+            {
+                approachingSoundEnabled = false;
+            }
+            approachingSoundChance = Plugin.slendermanApproachingSoundChance;
+            if (approachingSoundChance == null)
+            {
+                approachingSoundChance = 0;
+            }
+            //SyncSlendermanConfigValuesClientRpc();
             UnityEngine.Debug.Log("Slenderman spawned in Level.");
-            //numSlendermanEnemiesInLevel++;
             SyncNumSlendermanEnemiesInLevelClientRpc(1);
+            slendermanVoiceVolume = Plugin.slendermanVolume;
+            SetCreatureVoiceVolumeClientRpc(slendermanVoiceVolume);
+            AnimStalkingBaseClientRpc(); //so he uses one animation
             TeleportAway();
+            // If config enabled, play spawning sound
+            if (spawningSoundEnabled)
+            {
+                PlaySfxClientRpc("spawnFirstTimeSFX");
+            }
         }
 
         public override void OnDestroy()
         {
+            numSlendermanEnemiesInLevel = 0;
+            //UnityEngine.Debug.LogWarning("Resetting NumSlendermanEnemiesInLevel!!!!!!!!!!!");
+
             base.OnDestroy();
-            if (!IsServer) return;
-            SyncNumSlendermanEnemiesInLevelClientRpc(-1);
         }
 
         private void ChoosePlayerToHaunt()
@@ -106,7 +176,6 @@ namespace SlendermanMod
             if (!IsServer) return;
 
             SyncTimesSeenByPlayerClientRpc(0);
-            //timesSeenByPlayer = 0; //Reset stare malus
             float num = 0f;
             float num2 = 0f;
             int num3 = 0;
@@ -173,9 +242,9 @@ namespace SlendermanMod
             {
                 for (int i = 0; i < allAINodes.Length; i++)
                 {
-                    // Not within 20 units of the target & Not in LOS:
-                    // Target must either be looking more than 60 degrees away from the spot, or be more than 100 units away, or certain nonsolid foliage materials may break the line of sight for this check while not being considered for the previous line of sight check.
-                    if ((!mustBeInLOS || !Physics.Linecast(hauntingPlayer.gameplayCamera.transform.position, allAINodes[i].transform.position, StartOfRound.Instance.collidersAndRoomMaskAndDefault)) && !hauntingPlayer.HasLineOfSightToPosition(allAINodes[i].transform.position, 60f, 100, 20f))
+                    // Not within 25 units (OG 20 units) of the target & Not in LOS:
+                    // OLD :Target must either be looking more than 60 degrees away from the spot, or be more than 100 units away, or certain nonsolid foliage materials may break the line of sight for this check while not being considered for the previous line of sight check.
+                    if ((!mustBeInLOS || !Physics.Linecast(hauntingPlayer.gameplayCamera.transform.position, allAINodes[i].transform.position, StartOfRound.Instance.collidersAndRoomMaskAndDefault)) && !hauntingPlayer.HasLineOfSightToPosition(allAINodes[i].transform.position, 60f, 40, 25f))
                     {
                         //UnityEngine.Debug.DrawLine(hauntingPlayer.gameplayCamera.transform.position, allAINodes[i].transform.position, Color.green, 2f);
                         //UnityEngine.Debug.Log($"Player distance to inside Slenderman haunt position: {Vector3.Distance(hauntingPlayer.transform.position, allAINodes[i].transform.position)}");
@@ -204,7 +273,7 @@ namespace SlendermanMod
             return Vector3.zero;
         }
 
-        private void SetStalkingPosition(Vector3 newPosition, float timeToStare = 20f)
+        private void SetStalkingPosition(Vector3 newPosition) //, float timeToStare = 20f)
         {
             if (!IsServer) return;
             if (currentBehaviourStateIndex != 1)
@@ -218,7 +287,8 @@ namespace SlendermanMod
                 agent.SetDestination(destination);
                 agent.speed = 0f;
                 //UnityEngine.Debug.Log("Slenderman: STARTING HAUNT STARE");
-                stalkingTimer = timeToStare;
+                //stalkingTimer = timeToStare;
+                stalkingTimer = stalkingIntervalTime;
                 seenByPlayerThisTime = false; // So the dice-roll when looked at only happens once per stalk
                 if (UnityEngine.Random.Range(0, 100) < 50)
                 {
@@ -239,6 +309,12 @@ namespace SlendermanMod
             yield return new WaitForSeconds(1.5f);
             Disappear();
             disappearOnDelayCoroutine = null;
+            if (toggleLights)
+            {
+                FlipLightsBreaker();
+                toggleLights = false;
+                canFlipLightsBreaker = false; // So he cannot shut em off again (would be annoying)
+            }
             if (vanishWithSound)
             {
                 PlaySfxHauntedPlayerClientRpc("disappearSFX");
@@ -249,12 +325,12 @@ namespace SlendermanMod
         private void Disappear()
         {
             if (!IsServer) return;
-            
+
+            timer = 0f;
             DisableMesh();
             disappearWithDelay = false;
-            sitOutOneStare = true;
-            TeleportAway(); // So players cant collide w/ him at the previous position + scan him
-            SwitchToBehaviourStateOnLocalClient(0); //Switch to Absent state
+            TeleportAway();
+            SwitchToBehaviourStateOnLocalClient(0);
         }
 
         private void StartCreepingTowardsPlayer(float movementSpeed = 10.0f)
@@ -264,7 +340,7 @@ namespace SlendermanMod
             if (!creepingCloser)
             {
                 DisableMesh();
-                creepingCloser = true; //used for collision detection (if colliding w/ haunted player during creeping closer, kill player)
+                creepingCloser = true;
                 //UnityEngine.Debug.Log("SLENDERMAN CREEPING CLOSER!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
                 timesCreptCloser++;
                 agent.speed = movementSpeed;
@@ -274,6 +350,20 @@ namespace SlendermanMod
 
                 creepingCloserTimer = 4.0f;
                 timer = 0f;
+                // If sound enabled when approaching & chance right, play sound
+                if (approachingSoundEnabled)
+                {
+                    int approachingSoundNum = UnityEngine.Random.Range(0, 100);
+                    if (approachingSoundNum <= approachingSoundChance)
+                    {
+                        PlaySfxHauntedPlayerClientRpc("approachingSFX", false);
+                        //Debug.Log("Dice Rolled - Slenderman playing approaching sound!");
+                    }
+                    /*else
+                    {
+                        //Debug.Log("Dice Rolled - Slenderman not playing approaching sound!");
+                    }*/
+                }
             }
             else
             {
@@ -284,15 +374,32 @@ namespace SlendermanMod
         private void StopCreepingTowardsPlayer()
         {
             if (!IsServer) return;
-
+            
             creepingCloser = false;
             agent.speed = 0f;
             moveTowardsDestination = false;
+
+            // TEMP CHECK IF THIS WORKS
+            float distanceToPlayer = Vector3.Distance(hauntingPlayer.gameplayCamera.transform.position, base.transform.position);
+            if (distanceToPlayer >=60f)
+            {
+                AnimStalkingBaseClientRpc();
+            }
+            else if (distanceToPlayer < 60f && distanceToPlayer >=30f)
+            {
+                AnimStalking1ClientRpc();
+            }
+            else
+            {
+                AnimStalking2ClientRpc();
+            }
+
             if (!enemyMeshEnabled)
             {
                 EnableMesh();
             }
             //UnityEngine.Debug.Log("SLENDERMAN stopped creeping closer!!!");
+            //UnityEngine.Debug.LogWarning($"SLENDERMAN stopped creeping closer!!! Distance to player: {distanceToPlayer}");
         }
 
         private void SwitchHauntingPlayerTo(PlayerControllerB newHauntingTarget)
@@ -301,11 +408,9 @@ namespace SlendermanMod
             
             if (newHauntingTarget != null)
             {
-                hauntingPlayer = null; //Resets hauntingPlayer
+                hauntingPlayer = null;
                 hauntingPlayer = newHauntingTarget;
                 SyncTimesSeenByPlayerClientRpc(0);
-                //timesSeenByPlayer = 0; //Reset stare malus
-                //newHauntingTarget = null;
                 if (hauntingPlayer.isPlayerDead)
                 {
                     for (int k = 0; k < StartOfRound.Instance.allPlayerScripts.Length; k++)
@@ -327,7 +432,7 @@ namespace SlendermanMod
             switchedHauntingPlayer = false;
         }
 
-        private void StartChasing(float chaseDuration = 20f)
+        private void StartChasing()
         {
             if (!IsServer) return;
             if (currentBehaviourStateIndex != 3)
@@ -345,7 +450,8 @@ namespace SlendermanMod
                 //SetDestinationToPosition(hauntingPlayer.transform.position);
                 moveTowardsDestination = true;
                 //movingTowardsTargetPlayer = true;
-                PlaySfxClientRpc("chaseSFX");
+                //PlaySfxHauntedPlayerClientRpc("jumpscareSFX");
+                PlaySfxClientRpc("chaseSFX", false);
                 MessWithLights();
                 EnableMesh(true);
             }
@@ -358,6 +464,7 @@ namespace SlendermanMod
             agent.speed = 0f;
             moveTowardsDestination = false;
             StopChaseAnimClientRpc();
+            creatureVoice.Stop();
             seenByPlayerThisTime = false;
             SwitchToBehaviourStateOnLocalClient(2); //Disappear
             //UnityEngine.Debug.Log($"Slenderman: Chase with {hauntingPlayer.name} ended!");
@@ -391,6 +498,12 @@ namespace SlendermanMod
         {
             HandleChangeHauntingPlayer(hauntingPlayerId);
         }
+
+        /*[ClientRpc]
+        private void SyncSlendermanConfigValuesClientRpc()
+        {
+            // UNUSED for now
+        }*/
 
         [ClientRpc]
         private void SyncTimesSeenByPlayerClientRpc(int timesSeen)
@@ -441,6 +554,9 @@ namespace SlendermanMod
         [ClientRpc]
         private void StartChaseAnimClientRpc()
         {
+            creatureAnimator.SetBool("StalkingBase", value: false);
+            creatureAnimator.SetBool("Stalking1", value: false);
+            creatureAnimator.SetBool("Stalking2", value: false);
             creatureAnimator.SetBool("Chase", value: true);
         }
 
@@ -448,13 +564,54 @@ namespace SlendermanMod
         private void StopChaseAnimClientRpc()
         {
             creatureAnimator.SetBool("Chase", value: false);
+            creatureAnimator.SetBool("StalkingBase", value: true);
+        }
+
+
+        [ClientRpc]
+        private void AnimStalkingBaseClientRpc()
+        {
+            creatureAnimator.SetBool("StalkingBase", value: true);
+            creatureAnimator.SetBool("Stalking1", value: false);
+            creatureAnimator.SetBool("Stalking2", value: false);
+            creatureAnimator.SetBool("Chase", value: false);
         }
 
         [ClientRpc]
-        private void PlaySfxHauntedPlayerClientRpc(string sfxClipName)
+        private void AnimStalking1ClientRpc()
+        {
+            creatureAnimator.SetBool("StalkingBase", value: false);
+            creatureAnimator.SetBool("Stalking1", value: true);
+            creatureAnimator.SetBool("Stalking2", value: false);
+            creatureAnimator.SetBool("Chase", value: false);
+        }
+
+        [ClientRpc]
+        private void AnimStalking2ClientRpc()
+        {
+            creatureAnimator.SetBool("StalkingBase", value: false);
+            creatureAnimator.SetBool("Stalking1", value: false);
+            creatureAnimator.SetBool("Stalking2", value: true);
+            creatureAnimator.SetBool("Chase", value: false);
+        }
+
+
+        [ClientRpc]
+        private void SetCreatureVoiceVolumeClientRpc(float creatureVoiceVolume)
+        {
+            creatureVoice.volume = creatureVoiceVolume;
+        }
+
+        [ClientRpc]
+        private void PlaySfxHauntedPlayerClientRpc(string sfxClipName, bool toggleSpatialBlend = true)
         {
             if (hauntingPlayer != GameNetworkManager.Instance.localPlayerController) return;
 
+            if (toggleSpatialBlend)
+            {
+                creatureVoice.spatialBlend = 0; // So its the same volume no matter the distance
+                creatureSFX.spatialBlend = 0;
+            }
             if (sfxClipName == "ambienceSFX")
             {
                 creatureVoice.clip = ambienceSFX;
@@ -462,29 +619,55 @@ namespace SlendermanMod
             }
             else if (sfxClipName == "disappearSFX")
             {
-                creatureVoice.clip = disappearSFX;
-                creatureVoice.Play();
+                creatureSFX.clip = disappearSFX; // Note: I'm taking the creatureSFX for the chase sound so slenderman can play both the jumpscare sound (via voice) and the disappear sound (via sfx) at the same time.
+                creatureSFX.Play();
             }
             else if (sfxClipName == "chaseSFX")
             {
-                creatureVoice.clip = chaseSFX;
-                creatureVoice.Play();
+                creatureSFX.clip = chaseSFX; // Note: I'm taking the creatureSFX for the chase sound so slenderman can play both the jumpscare sound (via voice) and the chase sound (via sfx) at the same time.
+                creatureSFX.Play();
             }
             else if (sfxClipName == "jumpscareSFX")
             {
                 creatureVoice.clip = jumpscareSFX;
                 creatureVoice.Play();
             }
+            else if (sfxClipName == "spawnFirstTimeSFX")
+            {
+                creatureVoice.clip = spawnFirstTimeSFX;
+                creatureVoice.Play();
+            }
+            else if (sfxClipName == "approachingSFX")
+            {
+                creatureVoice.clip = approachingSFX;
+                creatureVoice.Play();
+            }
             else
             {
                 UnityEngine.Debug.LogWarning("Slenderman: Couldn't find assigned SFX sound!");
                 return;
+            }
+
+            if (toggleSpatialBlend)
+            {
+                creatureVoice.spatialBlend = 1;
+                creatureSFX.spatialBlend = 1;
             }
         }
 
         [ClientRpc]
-        private void PlaySfxClientRpc(string sfxClipName)
+        private void PlaySfxClientRpc(string sfxClipName, bool toggleSpatialBlend = true)
         {
+            /*if (GameNetworkManager.Instance.localPlayerController == hauntingPlayer)
+            {
+                creatureVoice.spatialBlend = 0;
+            }*/
+            if (toggleSpatialBlend)
+            {
+                creatureVoice.spatialBlend = 0; // So its the same volume no matter the distance
+                creatureSFX.spatialBlend = 0;
+            }
+
             if (sfxClipName == "ambienceSFX")
             {
                 creatureVoice.clip = ambienceSFX;
@@ -492,17 +675,27 @@ namespace SlendermanMod
             }
             else if (sfxClipName == "disappearSFX")
             {
-                creatureVoice.clip = disappearSFX;
-                creatureVoice.Play();
+                creatureSFX.clip = disappearSFX; // Note: I'm taking the creatureSFX for the chase sound so slenderman can play both the jumpscare sound (via voice) and the disappear sound (via sfx) at the same time.
+                creatureSFX.Play();
             }
             else if (sfxClipName == "chaseSFX")
             {
-                creatureVoice.clip = chaseSFX;
-                creatureVoice.Play();
+                creatureSFX.clip = chaseSFX; // Note: I'm taking the creatureSFX for the chase sound so slenderman can play both the jumpscare sound (via voice) and the chase sound (via sfx) at the same time.
+                creatureSFX.Play();
             }
             else if (sfxClipName == "jumpscareSFX")
             {
                 creatureVoice.clip = jumpscareSFX;
+                creatureVoice.Play();
+            }
+            else if (sfxClipName == "spawnFirstTimeSFX")
+            {
+                creatureVoice.clip = spawnFirstTimeSFX;
+                creatureVoice.Play();
+            }
+            else if (sfxClipName == "approachingSFX")
+            {
+                creatureVoice.clip = approachingSFX;
                 creatureVoice.Play();
             }
             else
@@ -510,6 +703,16 @@ namespace SlendermanMod
                 UnityEngine.Debug.LogWarning("Slenderman: Couldn't find assigned SFX sound!");
                 return;
             }
+
+            if (toggleSpatialBlend)
+            {
+                creatureVoice.spatialBlend = 1;
+                creatureSFX.spatialBlend = 1;
+            }
+            /*if (GameNetworkManager.Instance.localPlayerController == hauntingPlayer)
+            {
+                creatureVoice.spatialBlend = 1;
+            }*/
         }
 
         private void DisableMesh()
@@ -599,8 +802,7 @@ namespace SlendermanMod
                 UnityEngine.Debug.Log($"Jump to fear level 0.2 for player: {hauntingPlayer.name}");
             }
         }
-
-        // Unused (for now)
+        
         [ClientRpc]
         private void FlipLightsBreakerClientRpc()
         {
@@ -615,8 +817,7 @@ namespace SlendermanMod
             MessWithLightsClientRpc();
             UnityEngine.Debug.Log($"Flickering flashlights for player: {hauntingPlayer.name}");
         }
-
-        // Unused (for now)
+        
         private void FlipLightsBreaker()
         {
             if (!IsServer) return;
@@ -648,7 +849,7 @@ namespace SlendermanMod
                 return;
             }
 
-            if (!hauntingPlayer.isPlayerControlled || hauntingPlayer.isPlayerDead)
+            if (!hauntingPlayer.isPlayerControlled || hauntingPlayer.isPlayerDead || timesSeenByPlayer >= 8)
             {
                 if (!switchedHauntingPlayer)
                 {
@@ -665,20 +866,27 @@ namespace SlendermanMod
                         {
                             DisableMesh();
                         }
-                        float num = 50f;
-                        if (couldNotStareLastAttempt || sitOutOneStare)
+                        float num = hauntCooldown;
+                        if (couldNotStareLastAttempt)
                         {
-                            num = 25f; //Every 25 seconds, try to spawn
+                            num = hauntingIntervalTime;
                         }
                         if (timer > num)
                         {
                             timer = 0f;
                             TryFindingHauntPosition();
-                            sitOutOneStare = false;
                         }
                         else
                         {
-                            timer += Time.deltaTime;
+                            if (hauntingPlayer.isInsideFactory)
+                            {
+                                // 0.5x the timer to increase chances of spawning inside
+                                timer += Time.deltaTime * 2.0f;
+                            }
+                            else
+                            {
+                                timer += Time.deltaTime;
+                            }
                         }
                         break;
                     }
@@ -707,6 +915,7 @@ namespace SlendermanMod
                                 {
                                     StopCreepingTowardsPlayer();
                                 }
+                                PlaySfxHauntedPlayerClientRpc("jumpscareSFX");
                                 StartChasing();
                             }
                         }
@@ -723,34 +932,53 @@ namespace SlendermanMod
                                     SyncTimesSeenByPlayerClientRpc(1);
                                     float chaseChance = UnityEngine.Random.Range(0, 100);
                                     float distanceToPlayer = Vector3.Distance(hauntingPlayer.gameplayCamera.transform.position, base.transform.position);
-                                    if ((distanceToPlayer > 80f && chaseChance <= (1f + timesSeenByPlayer))) //Distance greater than 80 units: 1% chance to start a chase
+                                    if (timesSeenByPlayer != 1) // He will never start a chase when seen first time (so the haunted player knows hes being haunted > balance)
                                     {
-                                        StartChasing();
-                                    }
-                                    else if ((distanceToPlayer < 80f && distanceToPlayer > (60f + timesSeenByPlayer)) && chaseChance < 5) //Distance 80 - 60 units: 5% chance to start a chase
-                                    {
-                                        StartChasing();
-                                    }
-                                    else if ((distanceToPlayer < 60f && distanceToPlayer > (40f + timesSeenByPlayer)) && chaseChance < 15) //Distance 60 - 40 units: 15% chance to start a chase
-                                    {
-                                        StartChasing();
-                                    }
-                                    else if ((distanceToPlayer < 40f && distanceToPlayer > (25f + timesSeenByPlayer)) && chaseChance < 30) //Distance 40 - 25 units: 30% chance to start a chase
-                                    {
-                                        StartChasing();
-                                    }
-                                    else if ((distanceToPlayer < 25f && distanceToPlayer > (11f + timesSeenByPlayer)) && chaseChance < 50) //Distance 25 - 11 units: 50% chance to start a chase
-                                    {
-                                        StartChasing();
-                                    }
-                                    else if (distanceToPlayer <= 11f && chaseChance < (80f + timesSeenByPlayer))
-                                    {
-                                        StartChasing();
+                                        if ((distanceToPlayer > 80f && chaseChance <= (1f + timesSeenByPlayer))) //Distance greater than 80 units: 1% chance to start a chase
+                                        {
+                                            PlaySfxHauntedPlayerClientRpc("jumpscareSFX");
+                                            StartChasing();
+                                        }
+                                        else if ((distanceToPlayer < 80f && distanceToPlayer > 60f) && chaseChance < (5f + timesSeenByPlayer)) //Distance 80 - 60 units: 5% chance to start a chase
+                                        {
+                                            PlaySfxHauntedPlayerClientRpc("jumpscareSFX");
+                                            StartChasing();
+                                        }
+                                        else if ((distanceToPlayer < 60f && distanceToPlayer > 40f) && chaseChance < (15f + timesSeenByPlayer)) //Distance 60 - 40 units: 15% chance to start a chase
+                                        {
+                                            PlaySfxHauntedPlayerClientRpc("jumpscareSFX");
+                                            StartChasing();
+                                        }
+                                        else if ((distanceToPlayer < 40f && distanceToPlayer > 25f) && chaseChance < (30f + timesSeenByPlayer)) //Distance 40 - 25 units: 30% chance to start a chase
+                                        {
+                                            PlaySfxHauntedPlayerClientRpc("jumpscareSFX");
+                                            StartChasing();
+                                        }
+                                        else if ((distanceToPlayer < 25f && distanceToPlayer > 11f) && chaseChance < (50f + timesSeenByPlayer)) //Distance 25 - 11 units: 50% chance to start a chase
+                                        {
+                                            PlaySfxHauntedPlayerClientRpc("jumpscareSFX");
+                                            StartChasing();
+                                        }
+                                        else if (distanceToPlayer <= 11f && chaseChance < (70f + timesSeenByPlayer))
+                                        {
+                                            PlaySfxHauntedPlayerClientRpc("jumpscareSFX");
+                                            StartChasing();
+                                        }
+                                        else
+                                        {
+                                            seenByPlayerThisTime = false;
+                                            disappearWithDelay = true;
+                                            SwitchToBehaviourStateOnLocalClient(2);
+                                        }
                                     }
                                     else
                                     {
                                         if (timesSeenByPlayer == 1)
                                         {
+                                            if (canFlipLightsBreaker)
+                                            {
+                                                toggleLights = true;
+                                            }
                                             PlaySfxHauntedPlayerClientRpc("jumpscareSFX");
                                         }
                                         seenByPlayerThisTime = false;
@@ -768,7 +996,7 @@ namespace SlendermanMod
                         // If any collider intersects between player and slenderman (no LOS)
                         else
                         {
-                            timer += Time.deltaTime * 3.0f;
+                            timer += Time.deltaTime * 2.5f;
                         }
                         break;
                     }
@@ -780,10 +1008,11 @@ namespace SlendermanMod
                             if (disappearOnDelayCoroutine == null)
                             {
                                 float distanceToPlayer = Vector3.Distance(hauntingPlayer.gameplayCamera.transform.position, base.transform.position);
-                                if (distanceToPlayer <= 80f && distanceToPlayer > 25f)
+                                if (distanceToPlayer <= 70f && distanceToPlayer > 25f) //previously 80f
                                 {
                                     vanishWithSound = true;
                                     MessWithLights();
+                                    //UnityEngine.Debug.Log("Distance to Slenderman between 60 and 25 meters - increasing fear level & flickering lights!");
                                 }
                                 else if (distanceToPlayer <= 25f)
                                 {
@@ -928,7 +1157,7 @@ namespace SlendermanMod
                         switchedHauntingPlayer = true;
                         // Change targets to the new player
                         SwitchHauntingPlayerTo(playerControllerB);
-                        UnityEngine.Debug.Log($"Slenderman: collided with non-haunted player during creepingCloser. Changing targets to {playerControllerB.name}");
+                        //UnityEngine.Debug.Log($"Slenderman: collided with non-haunted player during creepingCloser. Changing targets to {playerControllerB.name}");
                         StopChasing();
                     }
                     else if (currentBehaviourStateIndex == 3)
@@ -936,7 +1165,7 @@ namespace SlendermanMod
                         switchedHauntingPlayer = true;
                         // Change targets to the new player
                         SwitchHauntingPlayerTo(playerControllerB);
-                        UnityEngine.Debug.Log($"Slenderman: collided with non-haunted player during chase. Changing targets to {playerControllerB.name}");
+                        //UnityEngine.Debug.Log($"Slenderman: collided with non-haunted player during chase. Changing targets to {playerControllerB.name}");
                         StopChasing();
                     }
                     else

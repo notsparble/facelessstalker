@@ -22,7 +22,7 @@ namespace SlendermanMod
     {
         const string GUID = "sparble.slendermanmod";
         const string NAME = "SlendermanMod";
-        const string VERSION = "1.0.2";
+        const string VERSION = "1.1.1";
 
         public static Harmony _harmony;
         public static EnemyType SlendermanEnemy;
@@ -31,10 +31,17 @@ namespace SlendermanMod
         public static Item page3Item;
         public static Item page4Item;
         internal static new ManualLogSource Logger;
-
         public static AssetBundle SlendermanAssets;
-
         public static SlendermanConfig SlendermanConfig { get; internal set; }
+        public static float slendermanHauntCooldown;
+        public static float slendermanHauntIntervalLength;
+        public static float slendermanStalkingIntervalLength;
+        public static float slendermanChaseDuration;
+        public static bool slendermanFlipsLightBreaker;
+        public static bool slendermanPlaysSpawningSound;
+        public static bool slendermanPlaysApproachingSound;
+        public static int slendermanApproachingSoundChance;
+        public static float slendermanVolume;
 
         // Preparing the mod for patching, UnityNetcodePatcher
         // Required by https://github.com/EvaisaDev/UnityNetcodePatcher
@@ -58,10 +65,9 @@ namespace SlendermanMod
         private void Awake()
         {
             Logger = base.Logger;
-            Assets.PopulateAssets(); //Load slenderman asset bundle
+            Assets.PopulateAssets();
 
             // Creating Config
-            //Config = new(base.Config);
             SlendermanConfig = new SlendermanConfig(Config);
 
             NetcodePatcher(); // ONLY RUN ONCE
@@ -72,7 +78,7 @@ namespace SlendermanMod
 
             // Network Prefabs need to be registered first. See https://docs-multiplayer.unity3d.com/netcode/current/basics/object-spawning/
             NetworkPrefabs.RegisterNetworkPrefab(SlendermanEnemy.enemyPrefab);
-            RegisterEnemy(SlendermanEnemy, 0, LevelTypes.All, SpawnType.Default, slendermanTerminalNode);
+            RegisterEnemy(SlendermanEnemy, SlendermanConfig.Instance.configSlendermanSpawnChances.Value, LevelTypes.All, SpawnType.Default, slendermanTerminalNode);
 
             // Loading the page items
             // Since I am too stupid to add texture variety to an item, I added 4 separate items
@@ -113,8 +119,17 @@ namespace SlendermanMod
             Utilities.FixMixerGroups(page4Item.spawnPrefab);
             NetworkPrefabs.RegisterNetworkPrefab(page4Item.spawnPrefab);
             Items.RegisterScrap(page4Item, pageRarity, Levels.LevelTypes.All);
+            
+            slendermanHauntCooldown = SlendermanConfig.Instance.configSlendermanHauntCooldown.Value;
+            slendermanHauntIntervalLength = SlendermanConfig.Instance.configSlendermanAbsentIntervalRate.Value;
+            slendermanStalkingIntervalLength = SlendermanConfig.Instance.configSlendermanStalkingIntervalRate.Value;
+            slendermanChaseDuration = SlendermanConfig.Instance.configSlendermanChaseDuration.Value;
+            slendermanFlipsLightBreaker = SlendermanConfig.Instance.configSlendermanLightBreaker.Value;
+            slendermanVolume = SlendermanConfig.Instance.configSlendermanVolume.Value;
+            slendermanPlaysSpawningSound = SlendermanConfig.Instance.configSlendermanPlaysSpawnSound.Value;
+            slendermanPlaysApproachingSound = SlendermanConfig.Instance.configSlendermanPlaysApproachingSound.Value;
+            slendermanApproachingSoundChance = SlendermanConfig.Instance.configSlendermanApproachingSoundChance.Value;
 
-            // Plugin startup logic
             Logger.LogInfo($"Plugin {PluginInfo.PLUGIN_GUID} is loaded!");
         }
     }
@@ -138,31 +153,92 @@ namespace SlendermanMod
     [System.Serializable]
     public class SlendermanConfig : SyncedInstance<SlendermanConfig>
     {
-        //public static ConfigEntry<int> configPageRarity; // ConfigEntry<string>, <bool>, <int>, etc
-        //public static ConfigEntry<LevelTypes> configPageMoons;
-
-        public readonly ConfigEntry<int> configPageRarity; // ConfigEntry<string>, <bool>, <int>, etc
+        public readonly ConfigEntry<int> configPageRarity;
         public readonly ConfigEntry<LevelTypes> configPageMoons;
+        public readonly ConfigEntry<int> configSlendermanSpawnChances;
+        public readonly ConfigEntry<float> configSlendermanHauntCooldown;
+        public readonly ConfigEntry<float> configSlendermanAbsentIntervalRate;
+        public readonly ConfigEntry<float> configSlendermanStalkingIntervalRate;
+        public readonly ConfigEntry<float> configSlendermanChaseDuration;
+        public readonly ConfigEntry<float> configSlendermanVolume;
+        public readonly ConfigEntry<bool> configSlendermanLightBreaker;
+        public readonly ConfigEntry<bool> configSlendermanPlaysSpawnSound;
+        public readonly ConfigEntry<bool> configSlendermanPlaysApproachingSound;
+        public readonly ConfigEntry<int> configSlendermanApproachingSoundChance;
         public SlendermanConfig(ConfigFile cfg)
         {
             InitInstance(this);
             configPageRarity = cfg.Bind(
-                    "PageItem",                          // Config section
-                    "Pages Spawn Weight",                     // Key of this config
+                    "PageItem",            // Config section
+                    "Pages Spawn Weight",  // Key of this config
                     15,                    // Default value
                     "The default spawn weight aka rarity of the page items. \nThe higher the value, the higher the chances of spawning. (0 = No Chances of Spawning, 100 = Very High Chances). \nNote that there are four separate page items and the value counts for every one of the four."    // Description
             );
-            /*configPageMoons = cfg.Bind(
-                    "PageItem.Moons",                          // Config section
-                    "PAGE_MOONS",                     // Key of this config
-                    "All",                    // Default value
-                    "[UNUSED] \nThe moons pages can spawn on. \nDefault value is 'All', other possible values are 'Vanilla', 'Modded', 'None' and individual moons in the format of 'MoonLevel', like 'DineLevel', 'MarchLevel', 'ExperimentationLevel' etc. "    // Description
-            );*/
             configPageMoons = cfg.Bind(
                 "PageItem.Values",
                 "Pages Spawn Level",
-                LevelTypes.All, //LevelTypes.DineLevel,
+                LevelTypes.All,
                 "The LevelTypes/Moons that the page items can spawn on. \nDefault value is 'All', other possible values are 'Vanilla', 'Modded', 'None' and individual moons in the format of 'MoonLevel', like 'DineLevel', 'MarchLevel', 'ExperimentationLevel' etc."
+            );
+            configSlendermanSpawnChances = cfg.Bind(
+                    "Slenderman",
+                    "Natural Spawn Chances",
+                    0,
+                    "The chances of spawning Slenderman, independent from any pages. \nDefault value is 0, which will cause him to never spawn naturally and only spawn him when a page is picked up."    // Description
+            );
+            configSlendermanHauntCooldown = cfg.Bind(
+                    "Slenderman.Behavior",
+                    "Absent State Cooldown",
+                    35.0f,
+                    "The duration of the cooldown after first picking up a page, looking at slenderman and after a chase before Slenderman tries to spawn again (in seconds). \nThe higher the value, the more time the player has before Slenderman spawns in."    // Description
+            );
+            configSlendermanAbsentIntervalRate = cfg.Bind(
+                    "Slenderman.Behavior",
+                    "Absent State Interval Length",
+                    15.0f,
+                    "The duration of intervals of the Slenderman trying to find a haunting spot during his Absent state (in seconds). If he fails to find a spot, he will wait x seconds again before trying to find a spot again. \nThe higher the value, the longer the intervals are and the longer it will take for him to try to re-spawn. \nHigh numbers may result in him almost never spawning at all on small moons without many outside objects. (0 = Very frequent spawn intervals, 60 = Wait 60 seconds before trying to find a spawning spot again)."    // Description
+            );
+            configSlendermanStalkingIntervalRate = cfg.Bind(
+                    "Slenderman.Behavior",
+                    "Stalking State Interval Length",
+                    20.0f,
+                    "The duration of intervals (in seconds) of the Slenderman stalking the player before creeping closer - The value MUST be higher than 4.0 and it is recommended to not set this number too high or low. \nThe higher the value, the longer the intervals are and the longer it takes him to creep closer to the haunted player. \nHigh numbers mean the player has much time to spot Slenderman, while very low numbers mean they will have to constantly check their surroundings. (4.5 = Pretty much immediate chase, 60 = Wait 60 seconds before creeping closer)."    // Description
+            );
+            configSlendermanChaseDuration = cfg.Bind(
+                    "Slenderman.Behavior",
+                    "Chase Duration",
+                    20.0f,
+                    "The duration of a chase (in seconds)."
+            );
+            configSlendermanLightBreaker = cfg.Bind(
+                    "Slenderman.Behavior",
+                    "Light Breaker Flip",
+                    false,
+                    "Whether Slenderman should shut off the facility lights after being seen the first time."    // Description
+            );
+            configSlendermanPlaysSpawnSound = cfg.Bind(
+                    "Slenderman.Behavior",
+                    "Play Spawning Sound",
+                    true,
+                    "Whether the global spawning sound should be played after Slenderman spawned in the round (both naturally and through picking up a page)."    // Description
+            );
+            configSlendermanPlaysApproachingSound = cfg.Bind(
+                    "Slenderman.Behavior",
+                    "Play Approaching Sound",
+                    true,
+                    "Whether the approaching sound should be enabled for the haunted player."    // Description
+            );
+            configSlendermanApproachingSoundChance = cfg.Bind(
+                    "Slenderman.Behavior",
+                    "Approaching Sound Chance",
+                    25,
+                    "(Requires the 'Play Approaching Sound' option to be set to 'true') - The chance of Slenderman playing a static noise for the haunted player when creeping closer in % (must be between 0 and 100) - 0 means no sound will be played at all, 100 means for every interval he will play the sound 100%."
+            );
+            configSlendermanVolume = cfg.Bind(
+                    "Slenderman.Volume",
+                    "Slenderman Volume",
+                    1.0f,
+                    "The volume of the Slenderman enemy voice. 1.0 means 100% (default value), 0.8 means 80% etc."    // Description
             );
         }
 
