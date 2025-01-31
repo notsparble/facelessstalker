@@ -14,7 +14,7 @@ public class NetworkObjectManager
         if (networkPrefab != null)
             return;
 
-        //networkPrefab = (GameObject)slendermanassets.LoadAsset("SlendermanNetworkHandler"); //hab evtl nen anderen namen für das gameobject in unity
+        //networkPrefab = (GameObject)slendermanassets.LoadAsset("SlendermanNetworkHandler");
         networkPrefab = (GameObject)Plugin.SlendermanAssets.LoadAsset("SlendermanNetworkHandler");
         networkPrefab.AddComponent<SlendermanNetworkHandler>();
 
